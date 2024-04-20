@@ -1,0 +1,643 @@
+---
+title: "BIOSTAT 620 Project"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  messgae=FALSE,
+  warning=FALSE)
+
+library(ISLR2)
+library(knitr)
+library(glmnet)
+library(lasso2)
+library(ggplot2)
+library(gridExtra)
+library(ggpubr)
+library(MASS)
+library(pls)
+library(Metrics)
+library(faraway)
+library(AER)
+library(latex2exp)
+library(psych)
+library(dplyr)
+library(stargazer)
+library(broom)
+library(GGally)
+library(lmtest)
+library(olsrr)
+library(pacman)
+library(estimatr)
+library(readxl)
+library(coin)
+library(torch)
+library(luz)
+library(torchvision)
+library(torchdatasets)
+library(zeallot)
+library(lubridate)
+library(circular) 
+library("sas7bdat")
+library(systemfit)
+library(car)
+library(Matching)
+library(MatchIt)
+library(boot)
+library(tableone)
+library(mice)
+library(kableExtra)
+```
+
+**Research Question:** association between procrastination behavior and compliance of intervention program
+
+<span style="color:red;"><strong>For Treatment B: Max daily 50 pickup per day</strong></span>
+
+$\text{Compilance} = \beta_0 +\beta_1 \cdot \text{lag-1 effect(pickup numbers)} +\beta_2 \cdot \text{baseline(pickup numbers)} +\beta_3 \cdot \text{score} + \beta_4 \cdot \text{early}$
+
+* **lag-1 effect(pickup numbers):** number of pick up time in yesterday
+
+* **score:** procrastination score value
+
+* **baseline(pickup numbers):** a constant (the average number of each person's daily number of pickup based on records from March 5 to March 26 without intervention)
+
+* **early:** a new created variable, meaning the proportion of a person's 1st pick up time earlier than 8:00 in a given period; from March 5 to March 26, there're 7 days of BIOSTAT 620 (starting from 8:00), and we expect a student's 1st pick up time during these days earlier than 8:00 since they expected to get up on time and attend the class; if a person has 3 days where his/her 1st pick up time earlier than 8:00 in these 7 days, we set this person's ```early``` as $3/7$; if a person has 7 days where his/her 1st pick up time earlier than 8:00 in these 7 days, we set this person's ```early``` as $7/7=1$; The higher the value of ```early``` implies the person more likely to accomplish task on time and self-discipline and less likely to be a procrastinator; on the other hand, a low value of ```early``` indicates a person more likely to be sluggishness and more likely to be a procrastinator;  
+
+$H_0: \beta_4 =0$
+
+$H_1: \beta_4 \ne 0$
+
+<span style="color:red;"><strong>For Treatment A: Max daily 200 screen time minutes per day</strong></span>
+
+$\text{Compilance} = \beta_0 +\beta_1 \cdot \text{lag-1 effect(minutes)} +\beta_2 \cdot \text{baseline(minutes)} +\beta_3 \cdot \text{score} + \beta_4 \cdot \text{early}$
+
+* **lag-1 effect(minutes):** screen time minutes in yesterday
+
+* **score:** procrastination score value
+
+* **baseline(minutes):** a constant (the average number of each person's daily screen time minutes based on records from March 5 to March 26 without intervention)
+
+* **early:** a new created variable, meaning the proportion of a person's 1st pick up time earlier than 8:00 in a given period; from March 5 to March 26, there're 7 days of BIOSTAT 620 (starting from 8:00), if a person has 3 days where his/her 1st pick up time earlier than 8:00 in these 7 days, we set this person's ```early``` as $3/7$; if a person has 7 days where his/her 1st pick up time earlier than 8:00 in these 7 days, we set this person's ```early``` as $7/7=1$; The higher the value of ```early``` implies the person more likely to accomplish task on time and self-discipline and less likely to be a procrastinator; on the other hand, a low value of ```early``` indicates a person more likely to be sluggishness and more likely to be a procrastinator; 
+
+$H_0: \beta_4 =0$
+
+$H_1: \beta_4 \ne 0$
+
+
+
+* **Load Data**
+
+```{r, echo=TRUE}
+screentime <- read_excel("Fulldata_620W24_Project2.xlsx", sheet="screentime")
+baseline   <- read_excel("Fulldata_620W24_Project2.xlsx", sheet="baseline")
+data       <- merge(screentime, baseline, by="pseudo_ID", sort=FALSE)
+colnames(data)
+```
+
+
+
+* **Variables Selection**
+
+```{r, echo=TRUE}
+data <- data[, c(1, 2, 3, 13, 4, 5, 8, 9, 26, 12, 6, 7, 18)]
+colnames(data) <- c("id", "date", "day", "treatment", "total.ST", "total.ST.min", 
+                    "pickups", "pickups.1st", "score", "compilance", "social.ST", 
+                    "social.ST.min", "sex")
+```
+
+```{r, echo=TRUE}
+data$total.ST.min <- as.double(data$total.ST.min)
+data$pickups      <- as.double(data$pickups)
+data$pickups.1st  <- as.double(data$pickups.1st)
+data$score        <- as.double(data$score)
+
+days_of_week <- weekdays(as.Date(data$date))
+data$day     <- days_of_week
+
+head(data)
+```
+
+
+#### <span style="color:blue;"><strong>1. Data Preprocessing</strong></span>
+
+* <span style="color:purple;"><strong>1.1 Data QC \& Cleaning \& Normalization</strong></span>
+
+* **1.1.1 Data Inconsistency**
+
+There are two ```data inconsistency``` issue in the data set, which means measurements of a variable are not recorded in the same unit. 
+
+The first one is about variable ```compliance```, representing success or failure of achieving the allowed accessibility according to each participant's respective assigned intervention program, and "1" coded for "success" and "0" coded for "failure". However, some people coded in other format, such as "Success", "Fail", and "N".
+
+```{r, echo=TRUE}
+unique(data$compilance)
+```
+
+Thus, we need to manually covert these incorrect format into "0" or "1". 
+
+```{r, echo=TRUE}
+data <- data %>%
+  mutate(compilance = case_when(
+    compilance == "Success" ~ "1",
+    compilance == "Fail" ~ "0",
+    compilance == "N" ~ "0",
+    compilance == "NA" ~ NA_character_,
+    compilance == "N/A" ~ NA_character_,
+    TRUE ~ compilance
+  )) %>%
+  mutate(compilance = as.numeric(compilance))
+
+unique(data$compilance)
+```
+
+The second one is about variable ```Total.ST.min```, some observations of ```Total.ST.min``` is missing but has valid ```Total.ST``` values, indicating some people forget to convert from "hour-minutes" format to "minutes" format. Thus, we write a function ```convert_to_minutes()``` to convert these "hour-minutes" format into "minutes" format. 
+
+```{r, echo=TRUE}
+index    <- which(is.na(data$total.ST.min) & !is.na(data$total.ST))
+time_str <- data[index, ]$total.ST
+time_str <- as.character(time_str)
+
+sum(is.na(data$total.ST.min))
+```
+
+```{r, echo=TRUE}
+# convert hours-minutes into minutes
+convert_to_minutes <- function(time_string) {
+  matches <- regexec("(\\d+)h(\\d+)m", time_string)
+  if (matches[[1]][1]==-1) {
+    if (grepl("h", time_string)) {
+      hours <- as.integer(sub("h", "", time_string))
+      return(hours*60)
+    } else {
+      return(NA) 
+    }
+  }
+  hours   <- as.integer(regmatches(time_string, matches)[[1]][2])
+  minutes <- as.integer(regmatches(time_string, matches)[[1]][3])
+
+  total_minutes <- hours * 60 + minutes
+  return(total_minutes)
+}
+minutes <- sapply(time_str, convert_to_minutes)
+
+data[index, ]$total.ST.min <- minutes
+sum(is.na(data$total.ST.min))
+```
+
+* **1.1.2A Invalid Data**
+
+We now focus on the ```Invalid Data```, which indicates whether measurements of a variable are in a valid range. Here, variables ```Total.ST.min``` (e.g., per day total screen time in minute), ```Pickups``` (e.g., per day total number of times that the user picked up the phone), and ```procrastination_score``` should all have positive valeus. 
+
+```{r, echo=TRUE}
+which(data$total.ST.min < 0)
+which(data$pickups < 0)
+which(data$score < 0)
+which(data$pickups.1st < 0)
+```
+
+* **1.1.2B Outliers Detection**
+
+However, some of measurements here is not reasonable and invalid because it divorced from the reality. 
+
+```{r, echo=TRUE, fig.height=6, fig.width=12, fig.align='center'}
+par(mfrow=c(1, 2))
+boxplot(data$total.ST.min, main="Daily Total Screen Time in Minutes")
+boxplot(data$pickups, main="Daily Numbers of Pickups")
+```
+
+For example, some measurements of ```Total.ST.min``` is over 1400 minutes, which indicating a person screen time on that day is more than 23.3 hours, which is unrealistic. On of possible reason maybe the participant's screen-lock functionality is disabled, so his/her phone may still record the screen time even when the person is sleeping. 
+
+In order to decide whether we need to remove these "strange" points, we have to gauge the impact of outliers, which is carrying out with-and-without-outliers analyses. If the results do not change significantly then outliers are minimally concerning and we can remove them. 
+
+```{r, echo=TRUE}
+# with-and-without outliers analysis 
+
+index1  <- which(data$total.ST.min >= 1000)
+index2  <- which(data$total.ST.min <= 10)
+index3  <- which(data$pickups <= 5)
+index4  <- which(data$pickups >= 300)
+
+index_x <- c(index1, index2)
+index_y <- c(index3, index4)
+
+x <- data$total.ST.min
+y <- data$pickups
+
+sum_removed_indices <- function(x, index) {
+  result <- 0
+  for (i in index) {
+    if (!is.na(x[i])) {
+      result <- result + (mean(na.omit(x)) - mean(na.omit(x[-i]))) / sqrt(var(na.omit(x[-i])))
+    }
+  }
+  return(result)
+}
+
+remove_minutes <- sum_removed_indices(x, index_x)
+remove_minutes
+```
+
+```{r, echo=TRUE}
+remove_pickup  <- sum_removed_indices(y, index_y)
+remove_pickup
+```
+
+The absolute value of results above are relatively small, so we can remove these "outliers/invalid points"
+
+```{r, echo=TRUE}
+data <- data[-c(index_x, index_y), ]
+```
+
+* **1.1.3 Data Accuracy \& Precision**
+
+Some participants at the beginning of the semester had disabled their phones to collect the screen time statistics, so the information is under-reported during that period, which may rise some concern about ```data accuracy```. In addition, one of the participants has significant amounts of imputed values (as discuss below), so this scenario may be subject to the potential issue of ```data precision```. 
+
+* <span style="color:purple;"><strong>1.2 Missing Data</strong></span>
+
+* **1.2.1 Imputation**
+
+```{r, echo=TRUE}
+data <- data[, c(1, 2, 3, 4, 6, 7, 8, 9, 10)] # remove total.ST
+head(data)
+```
+
+
+```{r, echo=TRUE}
+dates     <- c(data$date)
+day_parts <- format(as.Date(dates), "%m%d") # convert date 
+data$date <- c(day_parts)
+data$date <- as.double(data$date)
+
+# only focus on time for the last 4 weeks: from March 5 to April 2
+# from March 5 to March 26 is baseline observation, without any intervention
+# from March 27 to April 2  is intervention period 
+
+data <- data %>%
+  filter(date >= 305 & date <= 402)
+```
+
+```{r, echo=TRUE}
+data <- data %>%
+  arrange(id, date)
+
+# adjusted wrong compilance
+data <- data %>%
+  # filter(date >= 327 & date <= 402) %>%
+  mutate(compilance = case_when(
+    (treatment == "A" & total.ST.min <= 200) ~ 1,
+    (treatment == "A" & total.ST.min > 200) ~ 0,
+    (treatment == "B" & pickups <= 50) ~ 1,
+    (treatment == "B" & pickups > 50) ~ 0,
+    TRUE ~ compilance
+  ))
+```
+
+
+
+```{r, echo=TRUE}
+data_A <- subset(data, treatment=="A")
+data_B <- subset(data, treatment=="B")
+
+# for treatment A
+# create and store the new variable "base_mean"
+data_A <- data_A %>%
+  group_by(id) %>%
+  mutate(base_mean = mean(total.ST.min[date >= 305 & date <= 326], na.rm=TRUE),
+         base_mean = ifelse(is.nan(base_mean), NA, base_mean))
+
+# for treatment B
+# create and store the new variable "base_mean"
+data_B <- data_B %>%
+  group_by(id) %>%
+  mutate(base_mean = mean(pickups[date >= 305 & date <= 326], na.rm=TRUE),
+         base_mean = ifelse(is.nan(base_mean), NA, base_mean))
+```
+
+```{r, echo=TRUE}
+# for treatment A
+# create and store the new variable "early"
+filtered_data <- data_A %>%
+  filter(date >= 305 & date <= 326 & (day == "Tuesday" | day == "Thursday") & pickups.1st > 0.25)
+
+proportion_data <- filtered_data %>%
+  group_by(id) %>%
+  summarize(early=sum(pickups.1st < 1/3) / n())
+
+data_A <- data_A %>%
+  left_join(proportion_data, by="id")
+
+# for treatment B
+# create and store the new variable "early"
+filtered_data <- data_B %>%
+  filter(date >= 305 & date <= 326 & (day == "Tuesday" | day == "Thursday") & pickups.1st > 0.25)
+
+proportion_data <- filtered_data %>%
+  group_by(id) %>%
+  summarize(early=sum(pickups.1st < 1/3) / n())
+
+data_B <- data_B %>%
+  left_join(proportion_data, by="id")
+```
+
+```{r, echo=TRUE}
+# for treatment A
+# create and store the new variable "lag_y1"
+data_A <- data_A %>%
+  group_by(id) %>% 
+  mutate(lag_y1=lag(total.ST.min, n=1, default=NA)) %>% 
+  ungroup()
+
+# for treatment B
+# create and store the new variable "lag_y2"
+data_B <- data_B %>%
+  group_by(id) %>% 
+  mutate(lag_y2=lag(pickups, n=1, default=NA)) %>% 
+  ungroup()
+```
+
+Using ```mice()``` for imputation 
+
+```{r, echo=TRUE}
+set.seed(620)
+data_A_mice  <- mice(data_A, method="pmm", m=5, printFlag=FALSE)
+complete_A   <- complete(data_A_mice, "all")
+
+data_B_mice  <- mice(data_B, method="pmm", m=5, printFlag=FALSE)
+complete_B   <- complete(data_B_mice, "all")
+```
+
+```{r, echo=TRUE}
+# pool() function 
+fit_A <- with(data=data_A_mice, 
+              exp=glm(compilance~lag_y1+base_mean+score+early, 
+                      family=binomial(link="logit")))
+
+# pool(fit_A, custom.t = ".data$b + .data$b / .data$m")
+summary(pool(fit_A))
+```
+
+```{r, echo=TRUE}
+# pool() function 
+fit_B <- with(data=data_B_mice, 
+              exp=glm(compilance~lag_y2+base_mean+score+early, 
+                      family=binomial(link="logit")))
+
+# pool(fit_B, custom.t = ".data$b + .data$b / .data$m")
+summary(pool(fit_B))
+```
+
+Model Fitting: 
+
+```{r, echo=TRUE}
+# treatment A
+
+data_A1  <- subset(complete_A[["1"]], date >= 327 & date <= 402)
+data_A2  <- subset(complete_A[["2"]], date >= 327 & date <= 402)
+data_A3  <- subset(complete_A[["3"]], date >= 327 & date <= 402)
+data_A4  <- subset(complete_A[["4"]], date >= 327 & date <= 402)
+data_A5  <- subset(complete_A[["5"]], date >= 327 & date <= 402)
+```
+
+```{r, echo=TRUE}
+model_A1 <- glm(compilance~lag_y1+base_mean+score+early, 
+                    data=data_A1, family=binomial(link="logit")) 
+summary(model_A1)
+```
+
+```{r, echo=TRUE}
+model_A2 <- glm(compilance~lag_y1+base_mean+score+early, 
+                    data=data_A2, family=binomial(link="logit")) 
+summary(model_A2)
+```
+
+```{r, echo=TRUE}
+model_A3 <- glm(compilance~lag_y1+base_mean+score+early, 
+                    data=data_A3, family=binomial(link="logit")) 
+summary(model_A3)
+```
+
+```{r, echo=TRUE}
+model_A4 <- glm(compilance~lag_y1+base_mean+score+early, 
+                    data=data_A4, family=binomial(link="logit")) 
+summary(model_A4)
+```
+
+```{r, echo=TRUE}
+model_A5 <- glm(compilance~lag_y1+base_mean+score+early, 
+                    data=data_A5, family=binomial(link="logit")) 
+summary(model_A5)
+```
+
+```{r, echo=TRUE}
+# treatment B
+
+data_B1  <- subset(complete_B[["1"]], date >= 327 & date <= 402)
+data_B2  <- subset(complete_B[["2"]], date >= 327 & date <= 402)
+data_B3  <- subset(complete_B[["3"]], date >= 327 & date <= 402)
+data_B4  <- subset(complete_B[["4"]], date >= 327 & date <= 402)
+data_B5  <- subset(complete_B[["5"]], date >= 327 & date <= 402)
+```
+
+```{r, echo=TRUE}
+model_B1 <- glm(compilance~lag_y2+base_mean+score+early, 
+                    data=data_B1, family=binomial(link="logit")) 
+summary(model_B1)
+```
+
+```{r, echo=TRUE}
+model_B2 <- glm(compilance~lag_y2+base_mean+score+early, 
+                    data=data_B2, family=binomial(link="logit")) 
+summary(model_B2)
+```
+
+```{r, echo=TRUE}
+model_B3 <- glm(compilance~lag_y2+base_mean+score+early, 
+                    data=data_B3, family=binomial(link="logit")) 
+summary(model_B3)
+```
+
+```{r, echo=TRUE}
+model_B4 <- glm(compilance~lag_y2+base_mean+score+early, 
+                    data=data_B4, family=binomial(link="logit")) 
+summary(model_B4)
+```
+
+```{r, echo=TRUE}
+model_B5 <- glm(compilance~lag_y2+base_mean+score+early, 
+                    data=data_B5, family=binomial(link="logit")) 
+summary(model_B5)
+```
+
+
+* **1.2.2 Parameter Estimation \& Inference**
+
+* **For Treatment A**
+
+```{r, echo=TRUE}
+estimates_matrixA <- matrix(NA, nrow=5, ncol=4)
+
+estimates_matrixA[1, ] <- model_A1$coefficients[-1]
+estimates_matrixA[2, ] <- model_A2$coefficients[-1]
+estimates_matrixA[3, ] <- model_A3$coefficients[-1]
+estimates_matrixA[4, ] <- model_A4$coefficients[-1]
+estimates_matrixA[5, ] <- model_A5$coefficients[-1]
+
+mean_theta <- colMeans(estimates_matrixA)
+
+B <- numeric(length(mean_theta))
+for (i in 1:length(mean_theta)) {
+  B[i] <- (1/4) * sum((estimates_matrixA[, i] - mean_theta[i])^2)
+}
+
+# between-imputation variance 
+B
+```
+
+```{r, echo=TRUE}
+models    <- list(model_A1, model_A2, model_A3, model_A4, model_A5)
+variances <- matrix(nrow=length(models), ncol=4)
+
+for (i in 1:length(models)) {
+  coef_summary   <- summary(models[[i]])$coefficients
+  variances[i, ] <- (coef_summary[-1, "Std. Error"])^2
+}
+
+# average of within-imputation variance 
+W <- colMeans(variances)
+W
+```
+
+```{r, echo=TRUE}
+# total variance 
+T <- W + (1+(1/5))*B
+T
+
+# degrees of freedom 
+m <- 5
+v <- (m-1)*(1+W/((1+1/m)*B))^2
+
+# relative increase in variance due to non-response
+r <- (1+(1/m))*B/W
+r
+
+# fraction of missing information about "theta"
+l <- (r+2/(v+3))/(r+1)
+l
+
+# relative efficiency 
+re <- 1/(1+(l/m)) 
+re
+```
+
+```{r, echo=TRUE}
+df <- data.frame(B=B, W=W, T=T, r=r, l=l, re=re)
+rownames(df) <- c("lagged_y_1", "base_mean", "score", "early")
+colnames(df) <- c("Between Variance", "Within Variance", "Total Variance", 
+                  "Relative Increase", "Fraction of Missing Information",
+                  "Relative Efficiency")
+
+# kable(df, caption="Imputation Diagnostics of Treatment Intervention A")
+df
+# Imputation Diagnostics of Treatment Intervention A
+```
+
+
+* **For Treatment B**
+
+```{r, echo=TRUE}
+estimates_matrixB <- matrix(NA, nrow=5, ncol=4)
+
+estimates_matrixB[1, ] <- model_B1$coefficients[-1]
+estimates_matrixB[2, ] <- model_B2$coefficients[-1]
+estimates_matrixB[3, ] <- model_B3$coefficients[-1]
+estimates_matrixB[4, ] <- model_B4$coefficients[-1]
+estimates_matrixB[5, ] <- model_B5$coefficients[-1]
+
+mean_theta <- colMeans(estimates_matrixB)
+
+B <- numeric(length(mean_theta))
+for (i in 1:length(mean_theta)) {
+  B[i] <- (1/4) * sum((estimates_matrixB[, i] - mean_theta[i])^2)
+  # B[i] <- sum((estimates_matrix[, i] - mean_theta[i])^2)
+}
+
+# between-imputation variance 
+B
+```
+
+```{r, echo=TRUE}
+models    <- list(model_B1, model_B2, model_B3, model_B4, model_B5)
+variances <- matrix(nrow=length(models), ncol=4)
+
+for (i in 1:length(models)) {
+  coef_summary   <- summary(models[[i]])$coefficients
+  variances[i, ] <- (coef_summary[-1, "Std. Error"])^2
+}
+
+# average of within-imputation variance 
+W <- colMeans(variances)
+W
+```
+
+```{r, echo=TRUE}
+# total variance 
+T <- W + (1+(1/5))*B
+T
+
+# degrees of freedom 
+m <- 5
+v <- (m-1)*(1+W/((1+1/m)*B))^2
+
+# relative increase in variance due to non-response
+r <- (1+(1/m))*B/W
+r
+
+# fraction of missing information about "theta"
+l <- (r+2/(v+3))/(r+1)
+l
+
+# relative efficiency 
+re <- 1/(1+(l/m)) 
+re
+```
+
+```{r, echo=TRUE}
+df <- data.frame(B=B, W=W, T=T, r=r, l=l, re=re)
+rownames(df) <- c("lagged_y_2", "base_mean", "score", "early")
+colnames(df) <- c("Between Variance", "Within Variance", "Total Variance", 
+                  "Relative Increase", "Fraction of Missing Information",
+                  "Relative Efficiency")
+
+df
+```
+
+
+
+
+#### <span style="color:blue;"><strong>2. Data Analysis</strong></span>
+
+* <span style="color:purple;"><strong>2.1 Descriptive Statistics</strong></span>
+
+```{r, echo=TRUE}
+# Table 1
+```
+
+* <span style="color:purple;"><strong>2.2 Data Visualization</strong></span>
+
+```{r, echo=TRUE}
+#
+
+```
+
+* <span style="color:purple;"><strong>2.3 Modeling \& Inference</strong></span>
+
+```{r, echo=TRUE}
+# GLM Model & Missing Data
+```
+
+
+
